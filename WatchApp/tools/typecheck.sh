@@ -35,11 +35,14 @@ if [ "${1:-}" != "--no-build" ]; then
     done
 fi
 BIN="$(swift build --scratch-path "$SCRATCH" --show-bin-path 2>/dev/null)"
-[ -d "$BIN/GauntletWatchCore.swiftmodule" ] || { echo "shared modules not found in $BIN"; exit 2; }
+# Newer SwiftPM puts .swiftmodule files in a Modules/ subfolder of the bin path.
+MODS="$BIN"
+[ -d "$BIN/Modules/GauntletWatchCore.swiftmodule" ] && MODS="$BIN/Modules"
+[ -d "$MODS/GauntletWatchCore.swiftmodule" ] || { echo "shared modules not found in $BIN"; exit 2; }
 
 FILES=()
 while IFS= read -r file; do FILES+=("$file"); done < <(cd "$APP" && find GauntletWatch -name '*.swift' | sort)
-COMMON=(-typecheck -wmo -swift-version 5 -target "$TARGET" -parse-as-library -diagnostic-style llvm -I "$BIN")
+COMMON=(-typecheck -wmo -swift-version 5 -target "$TARGET" -parse-as-library -diagnostic-style llvm -I "$MODS")
 
 echo "== pass 1: strict, ${#FILES[@]} files as written (target $TARGET, Swift 5 mode)"
 (cd "$APP" && swiftc "${COMMON[@]}" "${FILES[@]}") > "$WORK/pass1.log" 2>&1
@@ -84,7 +87,7 @@ if [ -f "$TOOLS/logic_tests.swift" ]; then
     echo "== pass 4: logic tests"
     LOGIC=()
     while IFS= read -r file; do LOGIC+=("$file"); done < <(cd "$APP" && find GauntletWatch/Core -name '*.swift' | sort)
-    if (cd "$APP" && swiftc -swift-version 5 -target "$TARGET" -parse-as-library -I "$BIN" -L "$BIN" \
+    if (cd "$APP" && swiftc -swift-version 5 -target "$TARGET" -parse-as-library -I "$MODS" -L "$BIN" \
             -lGauntletProtocol -lGauntletLink -lGauntletWatchCore -lGauntletEngine \
             -o "$WORK/logic_tests" "${LOGIC[@]}" tools/logic_tests.swift) > "$WORK/pass4.log" 2>&1; then
         "$WORK/logic_tests" || status=1
