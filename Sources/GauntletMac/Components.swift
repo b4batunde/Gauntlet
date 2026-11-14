@@ -442,7 +442,7 @@ struct ClutchGauge: View {
             let pivot = CGPoint(x: size.width * 0.14, y: size.height * 0.80)
             let length = min(size.width * 0.74, size.height * 1.25)
             func tip(_ degrees: Double, _ scale: CGFloat = 1) -> CGPoint {
-                let r = degrees * .pi / 180
+                let r = CGFloat(degrees * .pi / 180)
                 return CGPoint(x: pivot.x + cos(r) * length * scale, y: pivot.y - sin(r) * length * scale)
             }
             let color = !valid ? Color.white.opacity(0.25) : (engaged ? UI.accent : Color.white.opacity(0.55))

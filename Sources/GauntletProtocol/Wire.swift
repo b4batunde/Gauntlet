@@ -120,6 +120,10 @@ public enum WatchActionCode: UInt8, Sendable, CaseIterable {
     case toggleScrollMode = 8
     case rightClick = 9
     case leftClick = 10
+    /// Arm custom-gesture recognition: the next movement is matched against recorded gestures.
+    case armGesture = 11
+    /// Push-to-talk for June. `argument` 1 = pressed, 0 = released.
+    case voiceHold = 12
 }
 
 public struct WatchAction: Equatable, Sendable {
@@ -158,6 +162,21 @@ public struct WatchStatus: Equatable, Sendable {
     }
 }
 
+/// 20 ms-ish of microphone audio from the watch: one self-contained IMA ADPCM block
+/// (see `IMAADPCM`), 16 kHz mono. Sent unreliably, like motion; the Mac fills small gaps with silence.
+public struct AudioFrame: Equatable, Sendable {
+    public var seq: UInt16
+    /// Watch monotonic clock at the first sample, milliseconds.
+    public var timestampMs: UInt32
+    /// `IMAADPCM.encodeBlock` output: 3-byte header (predictor, step index) + packed nibbles.
+    public var payload: Data
+    public init(seq: UInt16, timestampMs: UInt32, payload: Data) {
+        self.seq = seq; self.timestampMs = timestampMs; self.payload = payload
+    }
+    /// Bytes of a `.audio` message besides the payload.
+    public static let messageOverhead = 7
+}
+
 /// First message of a session.
 public struct Hello: Equatable, Sendable {
     public var version: UInt8
@@ -181,17 +200,19 @@ public enum WatchMessage: Equatable, Sendable {
     /// HMAC-SHA256 over the Mac's nonce, proving possession of the pairing key.
     case authProof(Data)
     case bye
+    /// Microphone audio for June. Only sent after the Mac asks with `MacMessage.audioRequest(true)`.
+    case audio(AudioFrame)
 
     private enum Tag {
         static let motion: UInt8 = 0x01, touch: UInt8 = 0x02, crown: UInt8 = 0x03
-        static let action: UInt8 = 0x04, status: UInt8 = 0x05
+        static let action: UInt8 = 0x04, status: UInt8 = 0x05, audio: UInt8 = 0x06
         static let hello: UInt8 = 0x10, authProof: UInt8 = 0x11, bye: UInt8 = 0x12
     }
 
     /// True for messages that must not be dropped (sent with acknowledgement over BLE).
     public var isReliable: Bool {
         switch self {
-        case .motion, .touch, .crown: return false
+        case .motion, .touch, .crown, .audio: return false
         case .action, .status, .hello, .authProof, .bye: return true
         }
     }
@@ -247,6 +268,9 @@ public enum WatchMessage: Equatable, Sendable {
             w.raw(proof.fixed(32))
         case .bye:
             w.u8(Tag.bye)
+        case .audio(let a):
+            w.u8(Tag.audio); w.u16(a.seq); w.u32(a.timestampMs)
+            w.raw(a.payload)
         }
         return w.data
     }
@@ -309,6 +333,12 @@ public enum WatchMessage: Equatable, Sendable {
             return .authProof(try r.raw(32))
         case Tag.bye:
             return .bye
+        case Tag.audio:
+            let seq = try r.u16()
+            let ts = try r.u32()
+            let payload = try r.raw(r.remaining)
+            guard payload.count >= IMAADPCM.headerSize else { throw WireError.malformed("audio block") }
+            return .audio(AudioFrame(seq: seq, timestampMs: ts, payload: payload))
         default:
             throw WireError.unknownType(tag)
         }
@@ -316,6 +346,17 @@ public enum WatchMessage: Equatable, Sendable {
 }
 
 // MARK: - Mac -> Watch
+
+/// What June is doing, so the watch can show it (ring colour, haptics).
+public enum AssistantWatchState: UInt8, Sendable, CaseIterable {
+    case off = 0
+    /// Listening for "Hey June" (the mic is live, nothing leaves the Mac).
+    case waiting = 1
+    /// Recording a command.
+    case listening = 2
+    case thinking = 3
+    case idle = 4
+}
 
 /// Haptic patterns the Mac can ask the watch to play.
 public enum HapticPattern: UInt8, Sendable, CaseIterable {
@@ -393,9 +434,13 @@ public enum MacMessage: Equatable, Sendable {
     case ping
     case helloAck(HelloAck)
     case authResult(AuthResult)
+    case assistantState(AssistantWatchState)
+    /// Start (true) or stop (false) streaming the watch microphone.
+    case audioRequest(Bool)
 
     private enum Tag {
         static let haptic: UInt8 = 0x80, state: UInt8 = 0x81, config: UInt8 = 0x82, ping: UInt8 = 0x83
+        static let assistantState: UInt8 = 0x84, audioRequest: UInt8 = 0x85
         static let helloAck: UInt8 = 0x90, authResult: UInt8 = 0x91
     }
 
@@ -422,6 +467,10 @@ public enum MacMessage: Equatable, Sendable {
         case .authResult(let r):
             w.u8(Tag.authResult); w.u8(r.status.rawValue)
             w.raw(r.proof.fixed(32))
+        case .assistantState(let s):
+            w.u8(Tag.assistantState); w.u8(s.rawValue)
+        case .audioRequest(let on):
+            w.u8(Tag.audioRequest); w.u8(on ? 1 : 0)
         }
         return w.data
     }
@@ -450,6 +499,11 @@ public enum MacMessage: Equatable, Sendable {
         case Tag.authResult:
             guard let status = AuthStatus(rawValue: try r.u8()) else { throw WireError.malformed("auth status") }
             return .authResult(AuthResult(status: status, proof: try r.raw(32)))
+        case Tag.assistantState:
+            guard let state = AssistantWatchState(rawValue: try r.u8()) else { throw WireError.malformed("assistant state") }
+            return .assistantState(state)
+        case Tag.audioRequest:
+            return .audioRequest(try r.u8() != 0)
         default:
             throw WireError.unknownType(tag)
         }

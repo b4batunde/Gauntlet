@@ -18,8 +18,11 @@ public final class WristEngine: @unchecked Sendable {
 
     // MARK: Lifecycle
 
-    public init(settings: EngineSettings = EngineSettings()) {
+    /// `gestureStore` defaults to the user's saved custom gestures; pass `CustomGestureStore(url: nil)` in tests.
+    public init(settings: EngineSettings = EngineSettings(),
+                gestureStore: CustomGestureStore = CustomGestureStore()) {
         self.settings = settings
+        self.customGestureStore = gestureStore
     }
 
     public static func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
@@ -83,8 +86,8 @@ public final class WristEngine: @unchecked Sendable {
                 self.snap.battery = status.battery
                 self.snap.heartRate = status.heartRate
                 self.snap.rssi = status.rssi
-            case .hello, .authProof:
-                break
+            case .hello, .authProof, .audio:
+                break           // handshake is the link's job; audio goes to June, not the engine
             case .bye:
                 self.stopStream(&out)
             }
@@ -126,6 +129,88 @@ public final class WristEngine: @unchecked Sendable {
         run { out in self.performLocked(action, now: now, &out) }
     }
 
+    // MARK: Custom gestures (public API)
+
+    /// Saved custom gestures. Edit names, actions and enabled flags through it.
+    public let customGestureStore: CustomGestureStore
+
+    /// Consumes the next pinch tap or system Double Tap when it returns true (June's confirm and
+    /// "Paste reply?" chip). Called synchronously **while the engine lock is held**: it must be quick,
+    /// must not block, and must never call back into the engine.
+    public var tapInterceptor: (() -> Bool)? {
+        get { lock.lock(); defer { lock.unlock() }; return tapInterceptorRef }
+        set { lock.lock(); tapInterceptorRef = newValue; lock.unlock() }
+    }
+
+    /// Opens a recording session. Then call `recordSample()` once per repetition (3 to 5 times).
+    public func beginRecording(name: String) {
+        run { out in
+            self.endCaptureLocked(&out)
+            self.recordingName = name
+            self.recordingSamples = []
+            self.captureMode = .recording
+            self.snap.recordingGesture = true
+            self.snap.recordingSampleCount = 0
+        }
+    }
+
+    /// Captures one repetition: waits up to 4 s for the movement to start and ends it when the
+    /// wrist goes still. Reported through `EngineEvent.recordingSample`.
+    public func recordSample() {
+        run { out in
+            guard self.captureMode == .recording else { return }
+            self.recorder.begin(time: self.clock, window: 4.0, onsetRate: 1.2)
+            self.haptic(.notify, &out)
+        }
+    }
+
+    public func discardLastSample() {
+        lock.lock()
+        if captureMode == .recording, !recordingSamples.isEmpty {
+            recordingSamples.removeLast()
+            snap.recordingSampleCount = recordingSamples.count
+        }
+        lock.unlock()
+    }
+
+    /// Learns the gesture from the samples and saves it. Returns nil (and keeps the session open)
+    /// when there are fewer than 3 samples or they are too different from each other.
+    public func finishRecording(action: CustomAction) -> CustomGesture? {
+        lock.lock()
+        guard captureMode == .recording, recordingSamples.count >= 3,
+              let threshold = GestureMath.threshold(for: recordingSamples) else {
+            lock.unlock()
+            return nil
+        }
+        let gesture = CustomGesture(id: UUID(), name: recordingName.isEmpty ? "Gesture" : recordingName,
+                                    action: action, enabled: true, createdAt: Date(),
+                                    templates: recordingSamples, threshold: threshold)
+        recorder.cancel()
+        captureMode = .none
+        recordingSamples = []
+        recordingName = ""
+        snap.recordingGesture = false
+        snap.recordingSampleCount = 0
+        snap.capturingGesture = false
+        lock.unlock()
+        // Outside the engine lock: the store's onChange may call back into the engine.
+        customGestureStore.update(gesture)
+        return gesture
+    }
+
+    public func cancelRecording() {
+        run { out in
+            guard self.captureMode == .recording else { return }
+            self.endCaptureLocked(&out)
+        }
+    }
+
+    /// Same as the watch-face Gesture button: the next movement (within 2.5 s) is matched against
+    /// the saved gestures. Reported through `customGestureArmed`, then `customGestureMatch` or `customGestureMiss`.
+    public func armCustomGesture() {
+        run { out in self.armLocked(&out) }
+    }
+
     // MARK: Internals
 
     private let lock = NSLock()
@@ -156,6 +241,13 @@ public final class WristEngine: @unchecked Sendable {
     private var dwellOffset = SIMD2<Double>.zero
     private var dwellStart: TimeInterval = 0
     private var dwellArmed = false
+
+    private var tapInterceptorRef: (() -> Bool)?
+    private enum CaptureMode { case none, recording, armed, ambient }
+    private var captureMode = CaptureMode.none
+    private var recorder = MotionRecorder()
+    private var recordingName = ""
+    private var recordingSamples: [[SIMD3<Double>]] = []
 
     private var windowStart: TimeInterval = 0
     private var windowReceived = 0
@@ -250,14 +342,33 @@ public final class WristEngine: @unchecked Sendable {
         }
         updateEngagement(frame: frame, axis: axis, gravity: p.gravity, &out)
 
+        // Always-on custom gestures listen whenever nothing else is capturing.
+        if captureMode == .none, snap.engaged, customGestureStore.alwaysOn,
+           customGestureStore.gestures.contains(where: { $0.enabled }) {
+            captureMode = .ambient
+            recorder.begin(time: clock, window: .infinity, onsetRate: 3.0)
+        } else if captureMode == .ambient, !snap.engaged || !customGestureStore.alwaysOn {
+            recorder.cancel()
+            captureMode = .none
+        }
+
         let tuning = settings.gestures
         let minCutoff = 4.0 + (0.6 - 4.0) * max(0, min(1, settings.smoothing))
         var move = SIMD2<Double>.zero
         var scroll = SIMD2<Double>.zero
-        let suppressed = now < suppressedUntil
+        let typingSuppressed = now < suppressedUntil
 
         for s in p.samples {
             clock += dt
+
+            // Custom gestures: a deliberate capture (recording or armed) owns the wrist while it runs.
+            if recorder.active, let result = recorder.feed(s.gyro, time: clock, dt: dt) {
+                handleCapture(result, &out)
+            }
+            let holding = recorder.capturing && (captureMode == .recording || captureMode == .armed)
+            snap.capturingGesture = recorder.capturing && captureMode != .ambient
+            let suppressed = typingSuppressed || holding
+
             var yaw = 0.0, pitch = 0.0, roll = 0.0
             if let frame {
                 yaw = simd_dot(s.gyro, frame.up)
@@ -432,6 +543,9 @@ public final class WristEngine: @unchecked Sendable {
             snap.heading = 0
             haptic(.notify, &out)
             return
+        case .voiceHold:
+            out.events.append(.voiceHold(isDown: a.argument != 0))
+            return
         default:
             break
         }
@@ -445,11 +559,17 @@ public final class WristEngine: @unchecked Sendable {
         case .toggleScrollMode: performLocked(.toggleScrollMode, now: now, &out)
         case .rightClick: performLocked(.rightClick, now: now, &out)
         case .leftClick: performLocked(.leftClick, now: now, &out)
-        case .togglePause, .recenter: break
+        case .armGesture: armLocked(&out)
+        case .togglePause, .recenter, .voiceHold: break
         }
     }
 
     private func fire(_ gesture: GestureKind, strength: Double, now: TimeInterval, _ out: inout Outbox) {
+        // June's confirm / paste chip gets first claim on a tap.
+        if gesture == .pinchTap || gesture == .handDoubleTap, let intercept = tapInterceptorRef, intercept() {
+            haptic(.success, &out)
+            return
+        }
         snap.lastGesture = gesture
         snap.lastGestureTime = clock
         out.events.append(.gesture(gesture, strength: strength))
@@ -530,8 +650,132 @@ public final class WristEngine: @unchecked Sendable {
         // Resuming re-engages on the next motion packet, once the clutch agrees.
     }
 
+    // MARK: Custom gestures (internals, under the lock)
+
+    private func armLocked(_ out: inout Outbox) {
+        guard captureMode != .recording else { return }      // never interrupt a recording session
+        guard customGestureStore.gestures.contains(where: { $0.enabled }) else {
+            haptic(.failure, &out)
+            out.events.append(.customGestureMiss(bestConfidence: 0))
+            return
+        }
+        captureMode = .armed
+        recorder.begin(time: clock, window: 2.5, onsetRate: 1.2)
+        snap.customGestureArmed = true
+        out.events.append(.customGestureArmed(true))
+        haptic(.notify, &out)
+    }
+
+    /// Leaves whatever capture is running, announcing the end of an armed window.
+    private func endCaptureLocked(_ out: inout Outbox) {
+        recorder.cancel()
+        if captureMode == .armed { out.events.append(.customGestureArmed(false)) }
+        captureMode = .none
+        recordingSamples = []
+        recordingName = ""
+        snap.customGestureArmed = false
+        snap.capturingGesture = false
+        snap.recordingGesture = false
+        snap.recordingSampleCount = 0
+    }
+
+    private func handleCapture(_ result: MotionRecorder.Result, _ out: inout Outbox) {
+        switch captureMode {
+        case .none:
+            recorder.cancel()
+
+        case .recording:
+            guard case .finished(let raw) = result else {
+                out.events.append(.recordingSample(index: recordingSamples.count + 1, accepted: false, quality: 0))
+                haptic(.failure, &out)
+                return
+            }
+            let template = GestureMath.template(raw)
+            var quality = 1.0
+            if !recordingSamples.isEmpty {
+                var total = 0.0
+                for other in recordingSamples { total += GestureMath.distance(template, other) }
+                let mean = total / Double(recordingSamples.count)
+                quality = max(0, min(1, 1 - mean / GestureMath.sampleRejectDistance))
+            }
+            let accepted = recordingSamples.isEmpty || quality > 0
+            if accepted {
+                recordingSamples.append(template)
+                snap.recordingSampleCount = recordingSamples.count
+            }
+            out.events.append(.recordingSample(index: recordingSamples.count + (accepted ? 0 : 1),
+                                               accepted: accepted, quality: quality))
+            haptic(accepted ? .success : .failure, &out)
+
+        case .armed:
+            captureMode = .none
+            snap.customGestureArmed = false
+            snap.capturingGesture = false
+            if case .finished(let raw) = result {
+                matchAndPerform(GestureMath.template(raw), strictness: 1, announceMiss: true, &out)
+            } else {
+                out.events.append(.customGestureMiss(bestConfidence: 0))
+                haptic(.failure, &out)
+            }
+            out.events.append(.customGestureArmed(false))
+
+        case .ambient:
+            if case .finished(let raw) = result {
+                matchAndPerform(GestureMath.template(raw), strictness: GestureMath.alwaysOnStrictness,
+                                announceMiss: false, &out)
+            }
+            recorder.begin(time: clock, window: .infinity, onsetRate: 3.0)
+        }
+    }
+
+    private func matchAndPerform(_ trace: [SIMD3<Double>], strictness: Double, announceMiss: Bool,
+                                 _ out: inout Outbox) {
+        var best: CustomGesture?
+        var bestRatio = Double.infinity
+        var bestConfidence = 0.0
+        for g in customGestureStore.gestures where g.enabled && !g.templates.isEmpty {
+            let limit = g.threshold * strictness
+            let d = GestureMath.bestDistance(trace, to: g.templates)
+            let ratio = d / limit
+            if ratio < bestRatio {
+                bestRatio = ratio
+                best = g
+                bestConfidence = GestureMath.confidence(distance: d, threshold: limit)
+            }
+        }
+        guard let gesture = best, bestRatio <= 1 else {
+            if announceMiss {
+                out.events.append(.customGestureMiss(bestConfidence: bestConfidence))
+                haptic(.failure, &out)
+            }
+            return
+        }
+        out.events.append(.customGestureMatch(id: gesture.id, confidence: bestConfidence))
+        performCustom(gesture.action, &out)
+    }
+
+    private func performCustom(_ action: CustomAction, _ out: inout Outbox) {
+        switch action {
+        case .pointer(let pointerAction):
+            performLocked(pointerAction, now: WristEngine.now(), &out)
+        case .keyCombo(let keyCode, let modifiers):
+            out.outputs.append(.shortcut(.keyCombo(keyCode: keyCode, modifiers: modifiers)))
+            haptic(.success, &out)
+        case .openApp(let bundleID):
+            out.outputs.append(.shortcut(.openApp(bundleID: bundleID)))
+            haptic(.success, &out)
+        case .assistant(let command):
+            out.events.append(.assistantRequested(command))
+            haptic(.success, &out)
+        case .none:
+            break
+        }
+    }
+
     private func stopStream(_ out: inout Outbox) {
         guard snap.streaming else { return }
+        if captureMode == .armed || captureMode == .ambient { endCaptureLocked(&out) }
+        else if captureMode == .recording { recorder.cancel(); snap.capturingGesture = false }
         snap.streaming = false
         snap.pointerVelocity = .zero
         snap.touching = false

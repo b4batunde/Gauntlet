@@ -26,7 +26,7 @@ struct Rig {
     final class EventBox: @unchecked Sendable { var events: [EngineEvent] = [] }
 
     init(rightWrist: Bool = false, crownLeft: Bool = false, settings: EngineSettings = EngineSettings()) {
-        engine = WristEngine(settings: settings)
+        engine = WristEngine(settings: settings, gestureStore: CustomGestureStore(url: nil))
         watch = VirtualWatch(seed: 42)
         watch.rightWrist = rightWrist
         watch.crownLeft = crownLeft
@@ -268,12 +268,16 @@ func runWireFormat() { suite("WireFormat") {
             .status(WatchStatus(seq: 6, battery: 77, heartRate: nil, flags: [.rightWrist], rssi: -60, sampleRateHz: 100)),
             .hello(Hello(deviceID: id, publicKey: key, name: "Ayush’s Watch")),
             .authProof(key), .bye,
+            .action(WatchAction(seq: 7, code: .voiceHold, argument: 1)),
+            .action(WatchAction(seq: 8, code: .armGesture)),
+            .audio(AudioFrame(seq: 65_000, timestampMs: 123_456, payload: Data([0x10, 0x00, 0x05, 0xAB, 0xCD]))),
         ]
         for m in watchMessages { expect(try WatchMessage.decode(m.encoded()) == m) }
         let macMessages: [MacMessage] = [
             .haptic(.dragStart), .state([.engaged, .sandbox]), .config(StreamConfig(sampleRateHz: 100, samplesPerPacket: 2)), .ping,
             .helloAck(HelloAck(deviceID: id, publicKey: key, nonce: id, known: true, name: "MacBook")),
             .authResult(AuthResult(status: .pendingApproval, proof: key)),
+            .assistantState(.listening), .audioRequest(true), .audioRequest(false),
         ]
         for m in macMessages { expect(try MacMessage.decode(m.encoded()) == m) }
     }

@@ -124,6 +124,38 @@ public final class SystemPointerSink: PointerSink, @unchecked Sendable {
             DispatchQueue.main.async {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
             }
+        case .keyCombo(let keyCode, let modifiers):
+            sendKeyCombo(keyCode: keyCode, modifiers: modifiers)
+        case .openApp(let bundleID):
+            openApp(bundleID: bundleID)
+        }
+    }
+
+    /// Presses and releases one key with modifiers (`CGEventFlags.rawValue`), e.g. ⌘V is
+    /// `sendKeyCombo(keyCode: 9, modifiers: CGEventFlags.maskCommand.rawValue)`.
+    /// Ordered with pointer events; needs the Accessibility permission.
+    public func sendKeyCombo(keyCode: UInt16, modifiers: UInt64) {
+        postQueue.async {
+            guard self.canPost() else { return }
+            let flags = CGEventFlags(rawValue: modifiers)
+            let key = CGKeyCode(keyCode)
+            guard let down = CGEvent(keyboardEventSource: self.source, virtualKey: key, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: self.source, virtualKey: key, keyDown: false) else { return }
+            down.flags = flags
+            up.flags = flags
+            down.post(tap: .cghidEventTap)
+            usleep(8_000)
+            up.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Launches (or brings forward) an app by bundle identifier.
+    public func openApp(bundleID: String) {
+        DispatchQueue.main.async {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration, completionHandler: nil)
         }
     }
 

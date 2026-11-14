@@ -5,8 +5,11 @@ public enum MouseButton: Int, Sendable, CaseIterable {
     case left, right, middle
 }
 
-public enum SystemShortcut: Sendable {
+public enum SystemShortcut: Equatable, Sendable {
     case missionControl
+    /// Press and release a key with modifiers. `modifiers` is a `CGEventFlags.rawValue`.
+    case keyCombo(keyCode: UInt16, modifiers: UInt64)
+    case openApp(bundleID: String)
 }
 
 /// Where the engine's output goes: the real macOS cursor, or the Dojo's virtual screen.
@@ -55,6 +58,21 @@ public enum EngineEvent: Sendable {
     case flickCandidate(outward: Bool, peakRate: Double)
     case streamStarted
     case streamStalled
+
+    // June and custom gestures
+    /// Push-to-talk for June: watch-face hold (or a Mac hotkey routed through the engine).
+    case voiceHold(isDown: Bool)
+    /// Custom-gesture recognition armed (true) or finished (false).
+    case customGestureArmed(Bool)
+    /// A recording sample finished. `index` is 1-based; rejected samples are not kept.
+    /// `quality` is 0...1, how consistent it is with the samples recorded so far.
+    case recordingSample(index: Int, accepted: Bool, quality: Double)
+    /// A custom gesture was recognised; its action runs right after this event.
+    case customGestureMatch(id: UUID, confidence: Double)
+    /// Armed, a movement was made, but it matched nothing well enough.
+    case customGestureMiss(bestConfidence: Double)
+    /// A custom gesture asked June to run a command at the cursor.
+    case assistantRequested(AssistantCommand)
 }
 
 /// Thread-safe view of what the engine currently knows. Cheap to copy; read it as often as you like.
@@ -105,6 +123,15 @@ public struct WristSnapshot: Sendable {
     public var lastGestureTime: TimeInterval = 0
     /// High-passed acceleration envelope, g. Handy for a live "tap meter".
     public var tapEnvelope = 0.0
+
+    /// Custom gestures: waiting for (or capturing) a gesture after `armCustomGesture()`.
+    public var customGestureArmed = false
+    /// Custom gestures: a movement is being captured right now (recording or armed).
+    public var capturingGesture = false
+    /// Custom gestures: a recording session is open.
+    public var recordingGesture = false
+    /// Custom gestures: samples kept so far in the open recording session.
+    public var recordingSampleCount = 0
 
     public init() {}
 }

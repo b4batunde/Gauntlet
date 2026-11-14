@@ -21,7 +21,9 @@ public final class BLECentralTransport: NSObject, LinkTransport, CBCentralManage
     private let streamUUID = CBUUID(string: Wire.streamCharUUID)
     private let controlUUID = CBUUID(string: Wire.controlCharUUID)
     private static let rememberedKey = "gauntlet.rememberedMac"
-    private static let maxBacklog = 6
+    private static let maxBacklog = 10
+    /// First byte of `WatchMessage.audio`. Under congestion audio is dropped before motion.
+    private static let audioTag: UInt8 = 0x06
 
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
@@ -77,7 +79,10 @@ public final class BLECentralTransport: NSObject, LinkTransport, CBCentralManage
             return
         }
         backlog.append(data)
-        if backlog.count > Self.maxBacklog { backlog.removeFirst(backlog.count - Self.maxBacklog) }
+        while backlog.count > Self.maxBacklog {
+            if let i = backlog.firstIndex(where: { $0.first == Self.audioTag }) { backlog.remove(at: i) }
+            else { backlog.removeFirst() }
+        }
         // The "ready" callback occasionally never arrives; do not let the stream stall on it.
         if now - lastUnreliableWrite > 0.12, let newest = backlog.popLast() {
             backlog.removeAll()

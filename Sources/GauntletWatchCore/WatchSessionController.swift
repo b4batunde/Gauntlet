@@ -28,11 +28,19 @@ public final class WatchSessionController: ObservableObject, LinkClientDelegate 
     @Published public private(set) var packetsPerSecond = 0
     /// Mac signal strength in dBm, 0 when unknown.
     @Published public private(set) var signal = 0
+    /// What June is doing on the Mac (drives the watch ring).
+    @Published public private(set) var assistantState: AssistantWatchState = .off
+    /// The Mac wants microphone audio. The watch shell starts/stops the mic when this changes.
+    @Published public private(set) var audioRequested = false
 
     /// Play this pattern on the Taptic Engine. Called on the main thread.
     public var onHaptic: ((HapticPattern) -> Void)?
     /// The Mac changed the requested sample rate. Called on the main thread.
     public var onStreamConfig: ((StreamConfig) -> Void)?
+    /// The Mac asked to start (true) or stop (false) microphone audio. Called on the main thread.
+    public var onAudioRequest: ((Bool) -> Void)?
+    /// June changed state on the Mac. Called on the main thread.
+    public var onAssistantState: ((AssistantWatchState) -> Void)?
 
     public var isConnected: Bool {
         if case .connected = state { return true }
@@ -180,6 +188,31 @@ public final class WatchSessionController: ObservableObject, LinkClientDelegate 
         }
     }
 
+    /// 16 kHz mono PCM from the microphone, any amount at a time, from any thread.
+    /// Encoded as IMA ADPCM and sent in blocks that fit one radio packet (about 20 ms each).
+    /// Dropped unless the Mac has asked for audio and the link is up.
+    public func submitAudio(_ pcm: [Int16]) {
+        queue.async {
+            guard self.client.isConnected, self.audioOn else {
+                self.audioPending.removeAll(keepingCapacity: true)
+                self.audioState = IMAADPCM.State()
+                return
+            }
+            self.audioPending.append(contentsOf: pcm)
+            let room = self.client.maxPayload - AudioFrame.messageOverhead
+            let perBlock = min(320, IMAADPCM.samplesThatFit(bytes: room) & ~1)
+            guard perBlock >= 32 else { return }               // link not ready for audio yet
+            while self.audioPending.count >= perBlock {
+                let block = Array(self.audioPending.prefix(perBlock))
+                self.audioPending.removeFirst(perBlock)
+                let payload = IMAADPCM.encodeBlock(block, state: &self.audioState)
+                self.audioSeq &+= 1
+                let ts = UInt32(truncatingIfNeeded: Int(ProcessInfo.processInfo.systemUptime * 1000))
+                self.client.send(.audio(AudioFrame(seq: self.audioSeq, timestampMs: ts, payload: payload)))
+            }
+        }
+    }
+
     public func setVitals(battery: Int?, heartRate: Int?, keepAliveActive: Bool, charging: Bool) {
         queue.async {
             self.battery = battery
@@ -214,6 +247,10 @@ public final class WatchSessionController: ObservableObject, LinkClientDelegate 
     private var heartRate: Int?
     private var keepAliveActive = false
     private var charging = false
+    private var audioOn = false
+    private var audioPending: [Int16] = []
+    private var audioState = IMAADPCM.State()
+    private var audioSeq: UInt16 = 0
 
     private func sendEvent(_ make: (UInt8) -> WatchMessage) {
         eventSeq &+= 1
@@ -268,10 +305,23 @@ public final class WatchSessionController: ObservableObject, LinkClientDelegate 
             samples.removeAll()
             touchAccumulator = .zero
             crownAccumulator = 0
+            // A lost link closes the mic; the Mac asks again after reconnecting.
+            audioOn = false
+            audioPending.removeAll()
+            audioState = IMAADPCM.State()
         }
+        let connected: Bool
+        if case .connected = state { connected = true } else { connected = false }
         DispatchQueue.main.async {
             self.state = state
-            if case .connected = state {} else { self.macState = [] }
+            if !connected {
+                self.macState = []
+                self.assistantState = .off
+                if self.audioRequested {
+                    self.audioRequested = false
+                    self.onAudioRequest?(false)
+                }
+            }
         }
     }
 
@@ -287,6 +337,18 @@ public final class WatchSessionController: ObservableObject, LinkClientDelegate 
             DispatchQueue.main.async {
                 self.streamConfig = new
                 self.onStreamConfig?(new)
+            }
+        case .assistantState(let state):
+            DispatchQueue.main.async {
+                self.assistantState = state
+                self.onAssistantState?(state)
+            }
+        case .audioRequest(let on):
+            audioOn = on
+            if !on { audioPending.removeAll(keepingCapacity: true); audioState = IMAADPCM.State() }
+            DispatchQueue.main.async {
+                self.audioRequested = on
+                self.onAudioRequest?(on)
             }
         case .ping, .helloAck, .authResult:
             break
