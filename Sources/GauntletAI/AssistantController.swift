@@ -262,7 +262,7 @@ public final class AssistantController {
 
     private func isFollowUp(_ utterance: String) -> Bool {
         let lower = utterance.lowercased()
-        return lastAnswer != nil && followUpWords.contains { lower.contains($0) }
+        return lastAnswer != nil && Self.followUpWords.contains { lower.contains($0) }
     }
 
     private func process(utterance rawUtterance: String, speechEnded: Date, point: CGPoint, trigger: String) async {
