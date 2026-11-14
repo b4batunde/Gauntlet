@@ -30,5 +30,11 @@
 	<string>NSApplication</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Gauntlet uses Bluetooth to receive motion and gestures from your Apple Watch so it can act as your mouse.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>June listens through the microphone only to hear your voice commands. Wake-word detection runs on this Mac; nothing is sent anywhere until you say "Hey June" or hold to talk.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>June turns your speech into text on this Mac (on-device) so it can understand your commands.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>June can save notes to Apple Notes when you ask it to and confirm.</string>
 </dict>
 </plist>

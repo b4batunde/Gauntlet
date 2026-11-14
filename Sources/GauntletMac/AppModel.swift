@@ -5,6 +5,7 @@ import GauntletProtocol
 import GauntletLink
 import GauntletEngine
 import GauntletDojo
+import GauntletAI
 
 public struct GestureLogEntry: Identifiable, Equatable {
     public let id = UUID()
@@ -56,6 +57,8 @@ private final class SharedFlags: @unchecked Sendable {
 private final class LinkBridge: LinkServerDelegate, @unchecked Sendable {
     let engine: WristEngine
     var onState: ((LinkServerState) -> Void)?
+    /// Microphone frames from the watch go to June, not the engine.
+    var onAudio: ((AudioFrame) -> Void)?
 
     init(engine: WristEngine) { self.engine = engine }
 
@@ -64,6 +67,10 @@ private final class LinkBridge: LinkServerDelegate, @unchecked Sendable {
     }
 
     func linkServer(_ server: LinkServer, didReceive message: WatchMessage) {
+        if case .audio(let frame) = message {
+            onAudio?(frame)
+            return
+        }
         engine.ingest(message)
     }
 }
@@ -75,7 +82,14 @@ public final class AppModel: ObservableObject {
     public let engine: WristEngine
     public let telemetry = Telemetry()
     public let dojoHost: DojoHost
+    /// June, the voice assistant. The UI reads `june`, `captureFrame` and `pocketChipPoint` below.
+    public let assistant: AssistantController
 
+    @Published public private(set) var june: JuneState = .off
+    /// What June is reading, in global top-left screen coordinates (nil = nothing to highlight).
+    @Published public private(set) var captureFrame: CGRect?
+    /// Where the "Paste reply?" chip should appear (nil = hidden).
+    @Published public private(set) var pocketChipPoint: CGPoint?
     @Published public private(set) var link: LinkServerState = .waiting("Starting…")
     @Published public var settings: EngineSettings { didSet { applySettings(old: oldValue) } }
     @Published public private(set) var accessibilityGranted = SystemPointerSink.isTrusted
@@ -105,6 +119,9 @@ public final class AppModel: ObservableObject {
     private var tickTimer: DispatchSourceTimer?
     private var uiTimer: Timer?
     private var keyMonitor: Any?
+    private let watchMic = WatchMicrophoneSource()
+    private var hotkeyMonitors: [Any] = []
+    private var rightOptionHeld = false
     private var developerTransportAdded = false
     private var started = false
     private var uiTicks = 0
@@ -116,6 +133,7 @@ public final class AppModel: ObservableObject {
         engine.sink = systemSink
         dojoHost = DojoHost(engine: engine)
         bridge = LinkBridge(engine: engine)
+        assistant = AssistantController(apiKeyProvider: { GeminiKey.load() })
 
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Gauntlet", isDirectory: true)
@@ -154,10 +172,28 @@ public final class AppModel: ObservableObject {
                 server.send(.state(AppModel.stateFlags(engine: engine, flags: flags)))
             case .gesture(let kind, let strength):
                 Task { @MainActor in self?.record(kind, strength: strength) }
+            case .voiceHold(let isDown):
+                Task { @MainActor in self?.assistant.pushToTalk(isDown: isDown) }
+            case .assistantRequested(let command):
+                let point = CGEvent(source: nil)?.location ?? .zero
+                Task { @MainActor in self?.assistant.run(command, at: point) }
             default:
                 break
             }
         }
+
+        // June: audio from the watch, state back to the watch, and the published state for the UI.
+        bridge.onAudio = { [watchMic] frame in watchMic.ingest(frame) }
+        watchMic.requestAudio = { on in server.send(.audioRequest(on)) }
+        assistant.registerSource(watchMic)
+        assistant.sendWatchState = { state in server.send(.assistantState(state)) }
+        assistant.sendKeyCombo = { [systemSink] key, modifiers in
+            systemSink.sendKeyCombo(keyCode: key, modifiers: modifiers)
+        }
+        assistant.onState = { [weak self] state in self?.june = state }
+        assistant.onCaptureFrame = { [weak self] frame in self?.captureFrame = frame }
+        assistant.onPocketChipRequested = { [weak self] point in self?.pocketChipPoint = point }
+        installJuneHotkeys()
 
         // Bluetooth needs a usage description in the bundle's Info.plist; a bare binary has none.
         let hasBluetoothPlist = Bundle.main.object(forInfoDictionaryKey: "NSBluetoothAlwaysUsageDescription") != nil
@@ -196,6 +232,9 @@ public final class AppModel: ObservableObject {
     }
 
     public func shutdown() {
+        assistant.cancel()
+        for monitor in hotkeyMonitors { NSEvent.removeMonitor(monitor) }
+        hotkeyMonitors = []
         engine.linkDidDisconnect()
         systemSink.releaseAll()
         server.stop()
@@ -256,6 +295,7 @@ public final class AppModel: ObservableObject {
         let wasConnected = isConnected
         link = state
         flags.watchConnected = isConnected
+        watchMic.setLinkConnected(isConnected)
         if isConnected, !wasConnected {
             server.send(.config(StreamConfig(sampleRateHz: 100, samplesPerPacket: 2)))
             server.send(.state(AppModel.stateFlags(engine: engine, flags: flags)))
@@ -317,6 +357,39 @@ public final class AppModel: ObservableObject {
         } else if !developerLinkEnabled, developerTransportAdded {
             server.remove(named: "Developer link")
             developerTransportAdded = false
+        }
+    }
+
+    /// Hold Right Option to talk to June; Control-Option-G arms custom gestures (for demos without the watch).
+    private func installJuneHotkeys() {
+        let handler: (NSEvent) -> Void = { [weak self] event in
+            Task { @MainActor in self?.handleHotkey(event) }
+        }
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown], handler: handler) {
+            hotkeyMonitors.append(monitor)
+        }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown], handler: { event in
+            handler(event)
+            return event
+        }) {
+            hotkeyMonitors.append(monitor)
+        }
+    }
+
+    private func handleHotkey(_ event: NSEvent) {
+        guard assistant.settings.enabled, assistant.settings.hotkeysEnabled else { return }
+        switch event.type {
+        case .flagsChanged:
+            guard event.keyCode == 61 else { return }                       // Right Option
+            let down = event.modifierFlags.rawValue & 0x40 != 0            // device-dependent "right alt" bit
+            if down != rightOptionHeld {
+                rightOptionHeld = down
+                assistant.pushToTalk(isDown: down)
+            }
+        case .keyDown:
+            if event.keyCode == 5, event.modifierFlags.contains([.control, .option]) { engine.armCustomGesture() }
+        default:
+            break
         }
     }
 
