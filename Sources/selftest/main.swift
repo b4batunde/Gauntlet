@@ -1,0 +1,8 @@
+// Runs every check and exits non-zero on failure:  swift run selftest
+runWireFormat()
+runPointerMapping()
+runClutch()
+runGestures()
+runRobustness()
+runLink()
+finish()

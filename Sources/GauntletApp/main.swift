@@ -1,0 +1,3 @@
+import GauntletMac
+
+GauntletMain.run()

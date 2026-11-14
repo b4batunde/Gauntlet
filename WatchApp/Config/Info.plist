@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Gauntlet</string>
+	<key>WKApplication</key>
+	<true/>
+	<key>WKWatchOnly</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Gauntlet uses Bluetooth to send your wrist movement, taps and Digital Crown turns to the Gauntlet app on your Mac, so your arm can move the pointer.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Gauntlet reads the watch's gyroscope and accelerometer to turn the way you move your forearm into pointer movement, clicks and scrolling on your Mac.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Gauntlet shows your live heart rate on the watch and in the Mac app while a session is running. Nothing is read from your Health history.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Gauntlet starts a workout session only so the watch keeps streaming motion when you lower your wrist. The workout is discarded when you end the session and is never saved to Health.</string>
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>workout-processing</string>
+		<string>physical-therapy</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+	</array>
+</dict>
+</plist>

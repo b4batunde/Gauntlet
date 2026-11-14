@@ -1,0 +1,61 @@
+# XcodeGen spec equivalent to the hand-written Gauntlet.xcodeproj.
+#
+# Only needed if the checked-in project ever has to be regenerated:
+#
+#     brew install xcodegen
+#     cd WatchApp && xcodegen generate
+#
+# It produces the same single watch-only target, linked against the shared Swift package
+# in the repository root.
+name: Gauntlet
+
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    watchOS: "11.0"
+  xcodeVersion: "16.0"
+
+packages:
+  Gauntlet:
+    path: ..
+
+targets:
+  Gauntlet Watch App:
+    type: application
+    platform: watchOS
+    deploymentTarget: "11.0"
+    sources:
+      - path: GauntletWatch
+      # Shown in the navigator, never compiled or bundled.
+      - path: Config
+        buildPhase: none
+    dependencies:
+      - package: Gauntlet
+        product: GauntletProtocol
+      - package: Gauntlet
+        product: GauntletLink
+      - package: Gauntlet
+        product: GauntletWatchCore
+      - package: Gauntlet
+        product: GauntletEngine
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunhacks.gauntlet.watch
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        SDKROOT: watchos
+        TARGETED_DEVICE_FAMILY: "4"
+        WATCHOS_DEPLOYMENT_TARGET: "11.0"
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Config/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Gauntlet
+        INFOPLIST_KEY_WKWatchOnly: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown"
+        CODE_SIGN_ENTITLEMENTS: Config/Gauntlet.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.0"
+        ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
