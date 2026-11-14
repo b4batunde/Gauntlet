@@ -248,6 +248,8 @@ public final class WristEngine: @unchecked Sendable {
     private var recorder = MotionRecorder()
     private var recordingName = ""
     private var recordingSamples: [[SIMD3<Double>]] = []
+    /// Always-on mode ignores movement until then, so one gesture never fires twice.
+    private var ambientQuietUntil: TimeInterval = 0
 
     private var windowStart: TimeInterval = 0
     private var windowReceived = 0
@@ -362,8 +364,9 @@ public final class WristEngine: @unchecked Sendable {
             clock += dt
 
             // Custom gestures: a deliberate capture (recording or armed) owns the wrist while it runs.
-            if recorder.active, let result = recorder.feed(s.gyro, time: clock, dt: dt) {
-                handleCapture(result, &out)
+            if recorder.active, clock >= ambientQuietUntil || captureMode != .ambient,
+               let result = recorder.feed(s.gyro, time: clock, dt: dt) {
+                handleCapture(result, dt: dt, pending: &move, &out)
             }
             let holding = recorder.capturing && (captureMode == .recording || captureMode == .armed)
             snap.capturingGesture = recorder.capturing && captureMode != .ambient
@@ -445,7 +448,8 @@ public final class WristEngine: @unchecked Sendable {
     private func emitMove(_ d: SIMD2<Double>, _ out: inout Outbox) {
         out.outputs.append(.move(d))
         recentMoves.append((clock, d))
-        if recentMoves.count > 32 { recentMoves.removeFirst(recentMoves.count - 32) }
+        // Enough history to undo a whole always-on custom gesture (up to ~2 s at 50 packets/s).
+        if recentMoves.count > 120 { recentMoves.removeFirst(recentMoves.count - 120) }
         travelSinceClick += simd_length(d)
     }
 
@@ -679,7 +683,8 @@ public final class WristEngine: @unchecked Sendable {
         snap.recordingSampleCount = 0
     }
 
-    private func handleCapture(_ result: MotionRecorder.Result, _ out: inout Outbox) {
+    private func handleCapture(_ result: MotionRecorder.Result, dt: Double, pending: inout SIMD2<Double>,
+                               _ out: inout Outbox) {
         switch captureMode {
         case .none:
             recorder.cancel()
@@ -712,7 +717,7 @@ public final class WristEngine: @unchecked Sendable {
             snap.customGestureArmed = false
             snap.capturingGesture = false
             if case .finished(let raw) = result {
-                matchAndPerform(GestureMath.template(raw), strictness: 1, announceMiss: true, &out)
+                _ = matchAndPerform(GestureMath.template(raw), strictness: 1, announceMiss: true, &out)
             } else {
                 out.events.append(.customGestureMiss(bestConfidence: 0))
                 haptic(.failure, &out)
@@ -720,16 +725,21 @@ public final class WristEngine: @unchecked Sendable {
             out.events.append(.customGestureArmed(false))
 
         case .ambient:
-            if case .finished(let raw) = result {
-                matchAndPerform(GestureMath.template(raw), strictness: GestureMath.alwaysOnStrictness,
-                                announceMiss: false, &out)
+            if case .finished(let raw) = result,
+               matchAndPerform(GestureMath.template(raw), strictness: GestureMath.alwaysOnStrictness,
+                               announceMiss: false, &out) {
+                // Without arming, the gesture also moved the pointer: put it back where it was,
+                // then ignore movement briefly so the same motion cannot fire again.
+                rollBack(window: Double(raw.count) * dt + MotionRecorder.quietTime + 0.1, pending: &pending, &out)
+                ambientQuietUntil = clock + 0.6
             }
             recorder.begin(time: clock, window: .infinity, onsetRate: 3.0)
         }
     }
 
+    /// Returns true when a gesture matched and its action ran.
     private func matchAndPerform(_ trace: [SIMD3<Double>], strictness: Double, announceMiss: Bool,
-                                 _ out: inout Outbox) {
+                                 _ out: inout Outbox) -> Bool {
         var best: CustomGesture?
         var bestRatio = Double.infinity
         var bestConfidence = 0.0
@@ -748,10 +758,11 @@ public final class WristEngine: @unchecked Sendable {
                 out.events.append(.customGestureMiss(bestConfidence: bestConfidence))
                 haptic(.failure, &out)
             }
-            return
+            return false
         }
         out.events.append(.customGestureMatch(id: gesture.id, confidence: bestConfidence))
         performCustom(gesture.action, &out)
+        return true
     }
 
     private func performCustom(_ action: CustomAction, _ out: inout Outbox) {

@@ -52,6 +52,8 @@ final class AppModel: ObservableObject {
     /// The Mac currently wants microphone audio.
     private var micWanted = false
     private var micStarting = false
+    private var lastAssistantState: AssistantWatchState = .off
+    private var talking = false
 
     /// - Parameter session: pass a ready-made controller to run over a test transport;
     ///   by default one is created for `services.route`.
@@ -68,6 +70,7 @@ final class AppModel: ObservableObject {
         self.session.onHaptic = { [weak self] pattern in self?.play(pattern.tone) }
         self.session.onStreamConfig = { [weak self] config in self?.streamConfigChanged(config) }
         self.session.onAudioRequest = { [weak self] on in self?.audioRequestChanged(on) }
+        self.session.onAssistantState = { [weak self] state in self?.assistantStateChanged(state) }
         keepAliveCoordinator.onChange = { [weak self] in self?.keepAliveChanged() }
         // `@Published` delivers the new value on the main thread, just before it is stored.
         self.session.$state
@@ -153,6 +156,19 @@ final class AppModel: ObservableObject {
         session.sendAction(code)
     }
 
+    /// The June button: held = talking (push-to-talk), released = done.
+    func setTalking(_ down: Bool) {
+        guard down != talking else { return }
+        talking = down
+        session.sendAction(.voiceHold, argument: down ? 1 : 0)
+        play(down ? .start : .stop)
+    }
+
+    /// The Gesture button: the next movement is matched against the gestures recorded on the Mac.
+    func armGesture() {
+        session.sendAction(.armGesture)
+    }
+
     /// Digital Crown movement in turns, positive = upward.
     func crownMoved(turns: Double) {
         session.sendCrown(delta: turns)
@@ -185,6 +201,8 @@ final class AppModel: ObservableObject {
         } else {
             stopMotion()
             macPaused = false
+            lastAssistantState = .off
+            if talking { talking = false }
         }
         evaluateKeepAlive()
     }
@@ -216,6 +234,17 @@ final class AppModel: ObservableObject {
         guard motionRunning else { return }
         motionRunning = false
         services.motion.stop()
+    }
+
+    // MARK: June
+
+    private func assistantStateChanged(_ state: AssistantWatchState) {
+        let old = lastAssistantState
+        lastAssistantState = state
+        // While the wearer holds the June button they already feel the press; skip the echo.
+        if let tone = JuneLook.haptic(from: old, to: state), !(talking && state == .listening) {
+            play(tone)
+        }
     }
 
     // MARK: Microphone (June)

@@ -51,30 +51,58 @@ struct StatusRing: View {
     var touching: Bool
     /// Always-on display: dim, thin, and perfectly still.
     var dim: Bool
+    /// June is listening or thinking: her colour, always spinning.
+    var override: Color? = nil
 
     var body: some View {
-        let moving = mode.animates && !dim
+        let color = override ?? mode.color
+        let moving = (override != nil || mode.animates) && !dim
         let width: CGFloat = dim ? 3 : 6
         TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !moving)) { context in
-            let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 4.0) / 4.0
+            let period: Double = override != nil ? 1.6 : 4.0
+            let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
             ZStack {
                 Circle()
-                    .stroke(mode.color.opacity(dim ? 0.35 : 0.2), lineWidth: width)
+                    .stroke(color.opacity(dim ? 0.35 : 0.2), lineWidth: width)
                 if !dim {
                     Circle()
                         .trim(from: 0, to: moving ? 0.72 : 1.0)
                         .stroke(
-                            AngularGradient(gradient: Gradient(colors: [mode.color.opacity(0.05), mode.color]),
+                            AngularGradient(gradient: Gradient(colors: [color.opacity(0.05), color]),
                                             center: .center,
                                             startAngle: .degrees(0),
                                             endAngle: .degrees(moving ? 259 : 360)),
                             style: StrokeStyle(lineWidth: width, lineCap: .round))
                         .rotationEffect(.degrees(moving ? turn * 360.0 : -90.0))
-                        .shadow(color: mode.color.opacity(0.75), radius: touching ? 11 : 6)
+                        .shadow(color: color.opacity(0.75), radius: touching ? 11 : 6)
                 }
             }
             .padding(width / 2 + 8)
         }
+    }
+}
+
+/// Round chip that reports press and release (push-to-talk). Filled while held or `active`.
+struct HoldChip: View {
+    let symbol: String
+    let color: Color
+    var active = false
+    let onChange: (Bool) -> Void
+    @GestureState private var pressed = false
+
+    var body: some View {
+        let filled = pressed || active
+        Image(systemName: symbol)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(filled ? Palette.background : color)
+            .frame(width: 38, height: 38)
+            .background(Circle().fill(filled ? color : Palette.panel))
+            .overlay(Circle().strokeBorder(color.opacity(0.4), lineWidth: 1))
+            .scaleEffect(pressed ? 1.12 : 1.0)
+            .animation(.easeOut(duration: 0.12), value: pressed)
+            .contentShape(Circle())
+            .gesture(DragGesture(minimumDistance: 0).updating($pressed) { _, state, _ in state = true })
+            .onChange(of: pressed) { _, down in onChange(down) }
     }
 }
 

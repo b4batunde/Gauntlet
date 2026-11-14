@@ -25,6 +25,8 @@ enum Palette {
     static let amber = Color(red: 255.0 / 255.0, green: 176.0 / 255.0, blue: 32.0 / 255.0)
     /// #FF4D6D
     static let red = Color(red: 255.0 / 255.0, green: 77.0 / 255.0, blue: 109.0 / 255.0)
+    /// #FF6FD8, June's colour.
+    static let june = Color(red: 255.0 / 255.0, green: 111.0 / 255.0, blue: 216.0 / 255.0)
     static let grey = Color(white: 0.5)
     static let textDim = Color(white: 0.66)
 }
@@ -98,6 +100,67 @@ enum ControlMode: Equatable {
         switch self {
         case .paused, .released: return false
         case .dragging, .scrolling, .engaged: return true
+        }
+    }
+}
+
+/// How June (the assistant on the Mac) shows up on the watch.
+enum JuneLook: Equatable {
+    /// June is off or idle: the Control page shows the pointer state as usual.
+    case quiet
+    /// Hands-free: the mic is open for "Hey June" (a small indicator, nothing else changes).
+    case waiting
+    /// Recording a command: June takes over the ring.
+    case listening
+    case thinking
+
+    init(_ state: AssistantWatchState) {
+        switch state {
+        case .off, .idle: self = .quiet
+        case .waiting: self = .waiting
+        case .listening: self = .listening
+        case .thinking: self = .thinking
+        }
+    }
+
+    /// True while June owns the ring instead of the pointer state.
+    var takesOverRing: Bool { self == .listening || self == .thinking }
+
+    var label: String {
+        switch self {
+        case .quiet, .waiting: return "JUNE"
+        case .listening: return "LISTENING"
+        case .thinking: return "THINKING"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .quiet: return "Hold mic to talk"
+        case .waiting: return "Say \u{201C}Hey June\u{201D}"
+        case .listening: return "Go ahead"
+        case .thinking: return "One moment"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .quiet, .waiting: return "mic.fill"
+        case .listening: return "waveform"
+        case .thinking: return "sparkles"
+        }
+    }
+
+    var color: Color { Palette.june }
+
+    /// What the wrist feels when June moves into `new` from `old`; nil = nothing.
+    static func haptic(from old: AssistantWatchState, to new: AssistantWatchState) -> HapticTone? {
+        guard old != new else { return nil }
+        switch new {
+        case .listening: return .directionUp        // "I'm listening"
+        case .thinking: return .click               // command captured
+        case .idle: return old == .thinking ? .success : nil
+        case .waiting, .off: return nil
         }
     }
 }

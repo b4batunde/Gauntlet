@@ -7,7 +7,7 @@ import AVFoundation
 /// Engine fed with hand-made gyro traces, for custom gestures and June hooks.
 struct TraceRig {
     final class Box: @unchecked Sendable { var events: [EngineEvent] = [] }
-    let engine = WristEngine(settings: EngineSettings(), gestureStore: CustomGestureStore(url: nil))
+    let engine: WristEngine
     let sink = RecordingSink()
     let box = Box()
     var now = 100.0
@@ -15,7 +15,8 @@ struct TraceRig {
     private var rng: UInt64 = 0x9E37_79B9_7F4A_7C15
     private var token: ObserverToken?
 
-    init() {
+    init(settings: EngineSettings = EngineSettings()) {
+        engine = WristEngine(settings: settings, gestureStore: CustomGestureStore(url: nil))
         engine.sink = sink
         let box = self.box
         token = engine.addObserver { box.events.append($0) }
@@ -152,6 +153,32 @@ func runCustomGestures() { suite("CustomGestures") {
         rig.rest(3.0)
         expect(rig.events.contains { if case .customGestureMiss = $0 { return true } else { return false } })
         expect(!rig.engine.snapshot().customGestureArmed)
+    }
+
+    test("always-on: a gesture fires without arming and the pointer is put back") {
+        var settings = EngineSettings()
+        settings.clutch = .always                       // engaged with the arm level
+        var rig = TraceRig(settings: settings)
+        rig.rest(0.3)
+        rig.engine.beginRecording(name: "Circle")
+        for _ in 0..<3 { rig.engine.recordSample(); rig.perform(TraceRig.circle(1)) }
+        expect(rig.engine.finishRecording(action: .pointer(.missionControl)) != nil)
+        rig.engine.customGestureStore.alwaysOn = true
+        rig.rest(0.3)
+        expect(rig.engine.snapshot().engaged, "rig should be engaged")
+        let x0 = rig.sink.x, y0 = rig.sink.y
+        rig.clearEvents()
+        rig.perform(TraceRig.circle(1))
+        expect(rig.events.contains { if case .customGestureMatch = $0 { return true } else { return false } },
+               "no match in always-on mode")
+        expect(rig.sink.shortcuts == 1, "shortcuts \(rig.sink.shortcuts)")
+        let drift = abs(rig.sink.x - x0) + abs(rig.sink.y - y0)
+        expect(drift < 60, "pointer not restored, drift \(drift)")
+        rig.clearEvents()
+        rig.perform(TraceRig.shake)
+        expect(!rig.events.contains { if case .customGestureMatch = $0 { return true } else { return false } },
+               "shake must not match")
+        expect(rig.sink.shortcuts == 1)
     }
 
     test("arming with no saved gestures is an immediate miss") {

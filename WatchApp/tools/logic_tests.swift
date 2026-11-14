@@ -209,6 +209,20 @@ func mappingTests() {
             check(!mode.label.contains(" ") && mode.label == mode.label.uppercased(), "one word: \(mode.label)")
         }
     }
+    section("June's states map to a look and the right haptics") {
+        check(JuneLook(.off) == .quiet && JuneLook(.idle) == .quiet, "off and idle are quiet")
+        check(JuneLook(.waiting) == .waiting && !JuneLook(.waiting).takesOverRing, "waiting is only an indicator")
+        check(JuneLook(.listening).takesOverRing && JuneLook(.thinking).takesOverRing, "listening/thinking own the ring")
+        for state in AssistantWatchState.allCases {
+            let look = JuneLook(state)
+            check(look.label == look.label.uppercased() && !look.label.contains(" "), "one word: \(look.label)")
+        }
+        check(JuneLook.haptic(from: .waiting, to: .listening) == .directionUp, "wake")
+        check(JuneLook.haptic(from: .listening, to: .thinking) == .click, "captured")
+        check(JuneLook.haptic(from: .thinking, to: .idle) == .success, "answered")
+        check(JuneLook.haptic(from: .waiting, to: .idle) == nil, "idle without an answer is silent")
+        check(JuneLook.haptic(from: .listening, to: .listening) == nil, "no repeats")
+    }
 }
 
 func keepAliveTests() {

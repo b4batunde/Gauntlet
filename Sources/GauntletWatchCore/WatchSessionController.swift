@@ -181,10 +181,10 @@ public final class WatchSessionController: ObservableObject, LinkClientDelegate 
         }
     }
 
-    public func sendAction(_ code: WatchActionCode) {
+    public func sendAction(_ code: WatchActionCode, argument: UInt8 = 0) {
         queue.async {
             self.flushCoalesced()
-            self.sendEvent { .action(WatchAction(seq: $0, code: code)) }
+            self.sendEvent { .action(WatchAction(seq: $0, code: code, argument: argument)) }
         }
     }
 
