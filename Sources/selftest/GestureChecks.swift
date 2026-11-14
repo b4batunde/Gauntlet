@@ -51,9 +51,16 @@ struct TraceRig {
     mutating func rest(_ seconds: Double) { feed(seconds) { _ in .zero } }
 
     static func circle(_ scale: Double) -> (Double) -> SIMD3<Double> {
-        { t in SIMD3(4 * scale * sin(2 * .pi * t / 0.5), 4 * scale * cos(2 * .pi * t / 0.5), 0) }
+        { (t: Double) -> SIMD3<Double> in
+            let phase: Double = 2 * Double.pi * t / 0.5
+            let amplitude: Double = 4 * scale
+            return SIMD3<Double>(amplitude * sin(phase), amplitude * cos(phase), 0)
+        }
     }
-    static func shake(_ t: Double) -> SIMD3<Double> { SIMD3(0, 0, 6 * sin(2 * .pi * t / 0.25)) }
+    static func shake(_ t: Double) -> SIMD3<Double> {
+        let phase: Double = 2 * Double.pi * t / 0.25
+        return SIMD3<Double>(0, 0, 6 * sin(phase))
+    }
 
     mutating func perform(_ gesture: (Double) -> SIMD3<Double>) {
         rest(0.1)
@@ -201,21 +208,28 @@ func runJuneHooks() { suite("JuneHooks") {
 
     test("IMA ADPCM round trips speech-like audio") {
         let n = 320
-        let pcm: [Int16] = (0..<n).map { i in
-            let t = Double(i) / 16_000
-            return Int16(6000 * sin(2 * .pi * 220 * t) + 2500 * sin(2 * .pi * 1250 * t))
+        var pcm: [Int16] = []
+        for i in 0..<n {
+            let t: Double = Double(i) / 16_000
+            let low: Double = 6000 * sin(2 * Double.pi * 220 * t)
+            let high: Double = 2500 * sin(2 * Double.pi * 1250 * t)
+            pcm.append(Int16(low + high))
         }
         var state = IMAADPCM.State()
         let block = IMAADPCM.encodeBlock(pcm, state: &state)
         expect(block.count == IMAADPCM.blockSize(samples: n))
         let decoded = try IMAADPCM.decodeBlock(block)
         expect(decoded.count == n)
-        var err = 0.0, sig = 0.0
+        var err: Double = 0
+        var sig: Double = 0
         for (a, b) in zip(pcm, decoded) {
-            err += pow(Double(a) - Double(b), 2)
-            sig += pow(Double(a), 2)
+            let d: Double = Double(a) - Double(b)
+            let v: Double = Double(a)
+            err += d * d
+            sig += v * v
         }
-        let snr = 10 * log10(sig / max(err, 1))
+        let ratio: Double = sig / Swift.max(err, 1)
+        let snr: Double = 10 * log10(ratio)
         expect(snr > 15, "SNR \(snr) dB")
         // A second block continues from the carried state and decodes on its own.
         let block2 = IMAADPCM.encodeBlock(pcm, state: &state)
@@ -229,7 +243,11 @@ func runWatchMicrophone() { suite("WatchMicrophone") {
     final class Counter: @unchecked Sendable { var samples = 0; var buffers = 0 }
 
     func frame(_ seq: UInt16) -> AudioFrame {
-        let pcm: [Int16] = (0..<320).map { Int16(4000 * sin(Double($0) * 0.2)) }
+        var pcm: [Int16] = []
+        for i in 0..<320 {
+            let x: Double = Double(i) * 0.2
+            pcm.append(Int16(4000 * sin(x)))
+        }
         var state = IMAADPCM.State()
         return AudioFrame(seq: seq, timestampMs: UInt32(seq) * 20, payload: IMAADPCM.encodeBlock(pcm, state: &state))
     }

@@ -35,10 +35,14 @@ if [ "${1:-}" != "--no-build" ]; then
     done
 fi
 BIN="$(swift build --scratch-path "$SCRATCH" --show-bin-path 2>/dev/null)"
-# Newer SwiftPM puts .swiftmodule files in a Modules/ subfolder of the bin path.
-MODS="$BIN"
-[ -d "$BIN/Modules/GauntletWatchCore.swiftmodule" ] && MODS="$BIN/Modules"
-[ -d "$MODS/GauntletWatchCore.swiftmodule" ] || { echo "shared modules not found in $BIN"; exit 2; }
+# Where SwiftPM put the .swiftmodule files varies by version (bin path, Modules/, ...): look.
+FOUND="$(find "$BIN" -maxdepth 3 -name 'GauntletWatchCore.swiftmodule' 2>/dev/null | head -n 1)"
+if [ -z "$FOUND" ]; then
+    echo "shared modules not found under $BIN; found these instead:"
+    find "$ROOT/$SCRATCH" -maxdepth 6 -name '*.swiftmodule' 2>/dev/null | head -n 10
+    exit 2
+fi
+MODS="$(dirname "$FOUND")"
 
 FILES=()
 while IFS= read -r file; do FILES+=("$file"); done < <(cd "$APP" && find GauntletWatch -name '*.swift' | sort)
