@@ -91,9 +91,13 @@ if [ -f "$TOOLS/logic_tests.swift" ]; then
     echo "== pass 4: logic tests"
     LOGIC=()
     while IFS= read -r file; do LOGIC+=("$file"); done < <(cd "$APP" && find GauntletWatch/Core -name '*.swift' | sort)
-    if (cd "$APP" && swiftc -swift-version 5 -target "$TARGET" -parse-as-library -I "$MODS" -L "$BIN" \
-            -lGauntletProtocol -lGauntletLink -lGauntletWatchCore -lGauntletEngine \
-            -o "$WORK/logic_tests" "${LOGIC[@]}" tools/logic_tests.swift) > "$WORK/pass4.log" 2>&1; then
+    # SwiftPM does not emit static libraries for these targets; link their object files directly.
+    OBJECTS=()
+    for module in GauntletProtocol GauntletLink GauntletWatchCore GauntletEngine; do
+        while IFS= read -r obj; do OBJECTS+=("$obj"); done < <(find "$BIN/$module.build" -name '*.o' 2>/dev/null | sort)
+    done
+    if (cd "$APP" && swiftc -swift-version 5 -target "$TARGET" -parse-as-library -I "$MODS" \
+            -o "$WORK/logic_tests" "${LOGIC[@]}" tools/logic_tests.swift "${OBJECTS[@]}") > "$WORK/pass4.log" 2>&1; then
         "$WORK/logic_tests" || status=1
     else
         grep -v "ld: warning" "$WORK/pass4.log"; echo "pass 4 FAILED to build"; status=1

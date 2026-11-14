@@ -52,7 +52,7 @@ final class WatchMicrophone: MicrophoneSource {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.record, mode: .default, options: [])
-            try session.setActive(true)
+            try session.setActive(true, options: [])
         } catch {
             return "Could not open the microphone (\(error.localizedDescription)). Open Gauntlet on the watch and try again."
         }
@@ -94,7 +94,7 @@ final class WatchMicrophone: MicrophoneSource {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            try? session.setActive(false)
+            try? session.setActive(false, options: [])
             // Typically "cannot start recording" because the app is not in the foreground.
             return "Open Gauntlet on the watch to turn on its microphone."
         }
