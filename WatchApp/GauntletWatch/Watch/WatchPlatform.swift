@@ -12,14 +12,16 @@ extension PlatformServices {
                                 haptics: device,
                                 motion: VirtualMotionSource(),
                                 keepAlive: [],
-                                isSimulated: true)
+                                isSimulated: true,
+                                microphone: WatchMicrophone())
         #else
         return PlatformServices(route: .bluetooth,
                                 device: device,
                                 haptics: device,
                                 motion: CoreMotionSource(),
                                 keepAlive: [WorkoutKeepAlive(), ExtendedRuntimeKeepAlive()],
-                                isSimulated: false)
+                                isSimulated: false,
+                                microphone: WatchMicrophone())
         #endif
     }
 }

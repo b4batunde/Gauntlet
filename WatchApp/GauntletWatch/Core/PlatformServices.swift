@@ -46,6 +46,19 @@ protocol KeepAliveBackend: AnyObject {
     func stop()
 }
 
+/// The watch microphone, for June. Delivers 16 kHz mono PCM on its own queue.
+/// Call `start` and `stop` on the main thread.
+protocol MicrophoneSource: AnyObject {
+    /// `nil` when the mic can be used; otherwise a short reason for the Status page.
+    var unavailableReason: String? { get }
+    var isRunning: Bool { get }
+    /// Asks for permission if needed and starts the mic. `completion` runs on the main thread with
+    /// `nil` once audio is flowing, or a reason it could not start (for example, the app was in the
+    /// background: watchOS only lets a recording start in the foreground; once running it continues).
+    func start(sink: @escaping ([Int16]) -> Void, completion: @escaping (String?) -> Void)
+    func stop()
+}
+
 protocol HapticPlayer: AnyObject {
     func play(_ tone: HapticTone)
 }
@@ -82,4 +95,6 @@ struct PlatformServices {
     var keepAlive: [KeepAliveBackend]
     /// True in the simulator, where motion is synthetic and the link is the developer link.
     var isSimulated: Bool
+    /// The microphone June listens through, when the Mac asks for it. Nil = no mic support.
+    var microphone: MicrophoneSource? = nil
 }

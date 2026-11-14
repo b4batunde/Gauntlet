@@ -25,6 +25,10 @@ final class AppModel: ObservableObject {
     /// Why the last pairing attempt was turned down. Kept on screen until the user retries or a
     /// new attempt gets under way, because the link itself goes straight back to searching.
     @Published private(set) var rejection: String?
+    /// The watch mic is streaming to June on the Mac.
+    @Published private(set) var micLive = false
+    /// Why the mic is not streaming although the Mac asked for it.
+    @Published private(set) var micProblem: String?
     /// Local setting: play haptics the Mac asks for (and crown detents).
     @Published var hapticsEnabled: Bool {
         didSet { defaults.set(!hapticsEnabled, forKey: Self.hapticsMutedKey) }
@@ -45,6 +49,9 @@ final class AppModel: ObservableObject {
     private var linkConnected = false
     private var macPaused = false
     private var motionRunning = false
+    /// The Mac currently wants microphone audio.
+    private var micWanted = false
+    private var micStarting = false
 
     /// - Parameter session: pass a ready-made controller to run over a test transport;
     ///   by default one is created for `services.route`.
@@ -60,6 +67,7 @@ final class AppModel: ObservableObject {
 
         self.session.onHaptic = { [weak self] pattern in self?.play(pattern.tone) }
         self.session.onStreamConfig = { [weak self] config in self?.streamConfigChanged(config) }
+        self.session.onAudioRequest = { [weak self] on in self?.audioRequestChanged(on) }
         keepAliveCoordinator.onChange = { [weak self] in self?.keepAliveChanged() }
         // `@Published` delivers the new value on the main thread, just before it is stored.
         self.session.$state
@@ -100,6 +108,8 @@ final class AppModel: ObservableObject {
         vitalsTimer?.invalidate()
         vitalsTimer = nil
         stopMotion()
+        micWanted = false
+        stopMic()
         keepAliveCoordinator.stop()
         session.stop()
     }
@@ -122,6 +132,8 @@ final class AppModel: ObservableObject {
         refreshDevice()
         // Sessions can only be started in the foreground, so this is the moment to catch up.
         evaluateKeepAlive()
+        // The same goes for the microphone.
+        if micWanted { startMic() }
     }
 
     // MARK: Input from the views
@@ -204,6 +216,38 @@ final class AppModel: ObservableObject {
         guard motionRunning else { return }
         motionRunning = false
         services.motion.stop()
+    }
+
+    // MARK: Microphone (June)
+
+    private func audioRequestChanged(_ on: Bool) {
+        micWanted = on
+        if on { startMic() } else { stopMic() }
+    }
+
+    private func startMic() {
+        guard let mic = services.microphone, !mic.isRunning, !micStarting else { return }
+        micStarting = true
+        let session = self.session
+        mic.start(sink: { session.submitAudio($0) }) { [weak self] problem in
+            guard let self else { return }
+            self.micStarting = false
+            if !self.micWanted {                 // the Mac changed its mind while we were starting
+                mic.stop()
+                self.micLive = false
+                return
+            }
+            if self.micProblem != problem { self.micProblem = problem }
+            let live = problem == nil && mic.isRunning
+            if self.micLive != live { self.micLive = live }
+            if live { self.play(.start) }
+        }
+    }
+
+    private func stopMic() {
+        services.microphone?.stop()
+        if micLive { micLive = false }
+        if micProblem != nil { micProblem = nil }
     }
 
     // MARK: Keep-alive

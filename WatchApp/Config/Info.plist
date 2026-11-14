@@ -16,6 +16,8 @@
 	<string>Gauntlet shows your live heart rate on the watch and in the Mac app while a session is running. Nothing is read from your Health history.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>Gauntlet starts a workout session only so the watch keeps streaming motion when you lower your wrist. The workout is discarded when you end the session and is never saved to Health.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Gauntlet sends what you say to June, the assistant in the Gauntlet app on your Mac, only while June is on. Your Mac listens for "Hey June"; nothing is sent anywhere before you say it.</string>
 	<key>WKBackgroundModes</key>
 	<array>
 		<string>workout-processing</string>
@@ -24,6 +26,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
+		<string>audio</string>
 	</array>
 </dict>
 </plist>

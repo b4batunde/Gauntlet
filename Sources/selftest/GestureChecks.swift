@@ -1,6 +1,8 @@
 import Foundation
 import GauntletProtocol
 import GauntletEngine
+import GauntletLink
+import AVFoundation
 
 /// Engine fed with hand-made gyro traces, for custom gestures and June hooks.
 struct TraceRig {
@@ -220,5 +222,63 @@ func runJuneHooks() { suite("JuneHooks") {
         let decoded2 = try IMAADPCM.decodeBlock(block2)
         expect(decoded2.count == n)
         expectThrows { _ = try IMAADPCM.decodeBlock(Data([1, 2])) }
+    }
+} }
+
+func runWatchMicrophone() { suite("WatchMicrophone") {
+    final class Counter: @unchecked Sendable { var samples = 0; var buffers = 0 }
+
+    func frame(_ seq: UInt16) -> AudioFrame {
+        let pcm: [Int16] = (0..<320).map { Int16(4000 * sin(Double($0) * 0.2)) }
+        var state = IMAADPCM.State()
+        return AudioFrame(seq: seq, timestampMs: UInt32(seq) * 20, payload: IMAADPCM.encodeBlock(pcm, state: &state))
+    }
+
+    test("frames become 16 kHz buffers; small gaps are filled with silence") {
+        let mic = WatchMicrophoneSource()
+        let counter = Counter()
+        var requests: [Bool] = []
+        mic.requestAudio = { requests.append($0) }
+        mic.setLinkConnected(true)
+        try mic.start { counter.samples += Int($0.frameLength); counter.buffers += 1 }
+        mic.ingest(frame(1))
+        mic.ingest(frame(3))                    // frame 2 lost
+        mic.ingest(frame(3))                    // duplicate: dropped
+        expect(counter.samples == 3 * 320, "samples \(counter.samples)")
+        expect(mic.framesReceived == 2 && mic.framesLost == 1)
+        mic.stop()
+        expect(requests == [true, false], "requests \(requests)")
+    }
+
+    test("reconnect and watch restarts resync the sequence") {
+        let mic = WatchMicrophoneSource()
+        let counter = Counter()
+        mic.setLinkConnected(true)
+        try mic.start { _ in counter.buffers += 1 }
+        mic.ingest(frame(500)); mic.ingest(frame(501))
+        expect(mic.framesReceived == 2)
+        // The watch app restarted without the link dropping: its counter is back near 0.
+        for seq in UInt16(1)...UInt16(12) { mic.ingest(frame(seq)) }
+        expect(mic.framesReceived == 2 + 3, "received \(mic.framesReceived)")
+        // A reconnect starts a fresh sequence immediately.
+        mic.setLinkConnected(false)
+        mic.setLinkConnected(true)
+        mic.ingest(frame(0))
+        expect(mic.framesReceived == 6)
+    }
+
+    test("debug capture writes a WAV even when nobody is listening") {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("gauntlet-mic-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let mic = WatchMicrophoneSource()
+        var requests: [Bool] = []
+        mic.requestAudio = { requests.append($0) }
+        mic.setLinkConnected(true)
+        mic.recordDebugWAV(seconds: 0.04, to: url) { _ in }
+        mic.ingest(frame(1)); mic.ingest(frame(2))
+        let data = (try? Data(contentsOf: url)) ?? Data()
+        expect(data.count == 44 + 640 * 2, "wav bytes \(data.count)")
+        expect(data.prefix(4) == Data("RIFF".utf8))
+        expect(requests == [true, false], "requests \(requests)")
     }
 } }
